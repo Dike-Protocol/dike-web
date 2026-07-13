@@ -90,6 +90,25 @@ export function formatFeeXlm(stroops: string | number | bigint): string {
   return fraction.length > 0 ? `${whole}.${fraction} XLM` : `${whole} XLM`;
 }
 
+// Soroban surge pricing is a uniform-price auction: the declared fee is only a
+// ceiling, and the network always refunds down to the actual per-ledger clearing
+// price — bidding higher never costs more. So rather than compute a "smart" bid,
+// just declare a generous flat ceiling. BASE_FEE (100 stroops, the network floor)
+// isn't enough: surge pricing ranks by fee-per-resource-unit, and a heavy
+// multi-contract call (e.g. create_market) can lose out to smaller/cheaper
+// transactions on every ledger until it expires — with no explicit error, since
+// the tx was validly accepted, just never picked for inclusion. Testnet has
+// near-zero competing traffic so this never surfaces there.
+// Stellar's own docs illustrate surge-pricing examples with per-op fees in the
+// 2-5 XLM range; 0.2 XLM trades some of that safety margin for a lower balance
+// requirement — current mainnet p99 is still ~0.00002 XLM, so this only matters
+// during a real spike. The only cost of bidding this high is that the signing
+// account must hold >= this much XLM at submission time (Stellar requires
+// balance to cover the full declared ceiling, not just the eventual actual
+// charge) — fine for wallets funding real bonds/liquidity, but would need
+// lowering if this ever signs from a near-empty wallet.
+const INCLUSION_FEE_CEILING_STROOPS = "2000000"; // 0.2 XLM ceiling, refunded to actual cost
+
 // Build + simulate a Soroban contract call. Returns assembled XDR ready for signing.
 export async function buildAndSimulate(
   sourceAddress: string,
@@ -102,7 +121,7 @@ export async function buildAndSimulate(
   const contract = new StellarSdk.Contract(contractId);
 
   const tx = new StellarSdk.TransactionBuilder(account, {
-    fee: StellarSdk.BASE_FEE,
+    fee: INCLUSION_FEE_CEILING_STROOPS,
     networkPassphrase: networkConfig.networkPassphrase,
   })
     .addOperation(contract.call(method, ...args))
